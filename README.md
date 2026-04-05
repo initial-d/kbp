@@ -224,11 +224,6 @@ kbp/
 ## Citation
 
 ```bibtex
-@inproceedings{kbp2025,
-  title     = {Does the Model Know What It Knows? Detecting Knowledge Boundaries via Internal Representation Geometry},
-  booktitle = {Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (ACL)},
-  year      = {2025}
-}
 ```
 
 ---
