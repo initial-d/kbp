@@ -70,6 +70,7 @@ def parse_args():
     p.add_argument("--device-map", default="auto",
                    choices=["auto", "cuda", "cpu", "balanced"],
                    help="HuggingFace device_map strategy (default: auto)")
+    p.add_argument("--mkqa-language", default="ar",
                    choices=["ar", "th", "sw", "en", "ja", "zh"])
 
     return p.parse_args()
@@ -191,7 +192,47 @@ def load_mmlu(split: str, subject: str = "all", max_samples: int = None):
         return queries, np.zeros(len(queries), dtype=int)
 
 
-def load_mkqa(language: str, max_samples: int = None):
+def load_laobench(split: str, max_samples: int = None):
+    """
+    Load LaoBench (BAAI/LaoBench on HuggingFace).
+
+    17k+ expert-curated Lao language QA samples across:
+      - Knowledge Application (culturally grounded)
+      - K12 Education (curriculum-aligned)
+      - Bilingual Translation (Lao/Chinese/English)
+
+    All queries are KD under O1 (Llama/Qwen have near-zero Lao knowledge).
+    """
+    try:
+        from datasets import load_dataset
+        ds = load_dataset("BAAI/LaoBench", split=split)
+        queries = []
+        for item in ds:
+            q = item.get("question", item.get("query", item.get("input", "")))
+            if q:
+                queries.append(q)
+        if max_samples:
+            queries = queries[:max_samples]
+        labels = np.zeros(len(queries), dtype=int)  # All KD under O1
+        logger.info(f"LaoBench: {len(queries)} queries (all KD — low-resource Lao)")
+        return queries, labels
+    except Exception as e:
+        logger.warning(f"Could not load LaoBench (BAAI/LaoBench): {e}")
+        # Fallback: local file
+        local_path = Path("data/laobench_queries.txt")
+        if local_path.exists():
+            with open(local_path) as f:
+                queries = [l.strip() for l in f if l.strip()]
+            if max_samples:
+                queries = queries[:max_samples]
+            return queries, np.zeros(len(queries), dtype=int)
+        raise RuntimeError(
+            "LaoBench not accessible. Try: pip install datasets && "
+            "huggingface-cli login (if access-gated)"
+        ) from e
+
+
+
     """Load MKQA (multilingual) dataset."""
     try:
         from datasets import load_dataset
@@ -241,10 +282,7 @@ def main():
     elif args.dataset == "mkqa":
         queries, labels = load_mkqa(args.mkqa_language, args.max_samples)
     elif args.dataset == "laobench":
-        # LaoBench not on HuggingFace; expect local file
-        logger.warning("LaoBench: load from local file (data/laobench_queries.txt)")
-        queries = [f"LaoBench query {i}" for i in range(args.max_samples or 800)]
-        labels = np.zeros(len(queries), dtype=int)
+        queries, labels = load_laobench(args.split, args.max_samples)
     elif args.dataset == "custom":
         if args.custom_queries is None:
             raise ValueError("--custom-queries required for --dataset custom")
