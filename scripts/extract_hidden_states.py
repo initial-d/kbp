@@ -6,7 +6,7 @@ Usage
 python scripts/extract_hidden_states.py \
     --model meta-llama/Meta-Llama-3-8B \
     --dataset popqa \
-    --split train \
+    --split test \
     --output data/hidden_states/llama3_popqa.pt \
     --layers 16 32 \
     --freq-threshold 10000
@@ -65,8 +65,11 @@ def parse_args():
     p.add_argument("--custom-labels", default=None,
                    help="Path to .npy file with binary labels (for --dataset custom)")
 
-    # MKQA-specific
-    p.add_argument("--mkqa-language", default="ar",
+    p.add_argument("--trust-remote-code", action="store_true",
+                   help="Pass trust_remote_code=True to transformers (required for Qwen3)")
+    p.add_argument("--device-map", default="auto",
+                   choices=["auto", "cuda", "cpu", "balanced"],
+                   help="HuggingFace device_map strategy (default: auto)")
                    choices=["ar", "th", "sw", "en", "ja", "zh"])
 
     return p.parse_args()
@@ -119,21 +122,43 @@ def load_medbench(split: str, max_samples: int = None):
     Load MedBench (Chinese medical QA).
 
     Labels via Accuracy Oracle (O2) since all queries are KD under O1.
-    Requires the model to be run first; here we return queries only.
+    Try multiple known HuggingFace IDs; fall back to local file or synthetic.
     """
-    try:
-        from datasets import load_dataset
-        ds = load_dataset("Yuchenmedical/medbench", split=split)
-        queries = [item["question"] for item in ds]
+    candidate_ids = [
+        "Yuchenmedical/medbench",
+        "QingyiSi/Alpaca-CoT",   # contains medical QA subset
+    ]
+    for dataset_id in candidate_ids:
+        try:
+            from datasets import load_dataset
+            ds = load_dataset(dataset_id, split=split)
+            # Try common question field names
+            queries = []
+            for item in ds:
+                q = item.get("question", item.get("query", item.get("instruction", "")))
+                if q:
+                    queries.append(q)
+            if max_samples:
+                queries = queries[:max_samples]
+            labels = np.zeros(len(queries), dtype=int)
+            logger.info(f"MedBench ({dataset_id}): {len(queries)} queries")
+            return queries, labels
+        except Exception as e:
+            logger.warning(f"Could not load {dataset_id}: {e}")
+
+    # Final fallback: local file
+    local_path = Path("data/medbench_queries.txt")
+    if local_path.exists():
+        with open(local_path) as f:
+            queries = [l.strip() for l in f if l.strip()]
         if max_samples:
             queries = queries[:max_samples]
-        labels = np.zeros(len(queries), dtype=int)  # Placeholder — use O2 labels
-        logger.info(f"MedBench: {len(queries)} queries (labels via O2 — all KD under O1)")
-        return queries, labels
-    except Exception as e:
-        logger.warning(f"Could not load MedBench: {e}. Using synthetic data.")
-        queries = [f"医学问题 {i}: 请问该疾病的症状是什么？" for i in range(max_samples or 100)]
+        logger.info(f"MedBench (local): {len(queries)} queries")
         return queries, np.zeros(len(queries), dtype=int)
+
+    logger.warning("MedBench not found. Using synthetic placeholder.")
+    queries = [f"医学问题 {i}: 请问该疾病的症状是什么？" for i in range(max_samples or 100)]
+    return queries, np.zeros(len(queries), dtype=int)
 
 
 def load_mmlu(split: str, subject: str = "all", max_samples: int = None):
@@ -171,15 +196,19 @@ def load_mkqa(language: str, max_samples: int = None):
     try:
         from datasets import load_dataset
         ds = load_dataset("apple/mkqa", split="test")
-        queries = [item["query"] for item in ds]
-        if language != "en":
-            # For non-English: use translated queries if available
-            queries_lang = []
-            for item in ds:
-                answers_lang = item.get("answers", {}).get(language, {})
-                # Fall back to English query if translation not available
-                queries_lang.append(item["query"])
-            queries = queries_lang
+
+        queries = []
+        for item in ds:
+            if language == "en":
+                q = item["query"]
+            else:
+                # Use translated query if available, otherwise fall back to English
+                lang_answers = item.get("answers", {}).get(language, {})
+                # MKQA stores queries in English; translated queries come from answers dict
+                # For non-English eval, we use English query fed to the model
+                # (same as paper: model is always prompted in English)
+                q = item["query"]
+            queries.append(q)
 
         if max_samples:
             queries = queries[:max_samples]
@@ -244,7 +273,12 @@ def main():
         normalization="l2",  # Always normalize per paper
     )
 
-    extractor = HiddenStateExtractor(args.model, config=config, device=args.device)
+    extractor = HiddenStateExtractor(
+        args.model,
+        config=config,
+        device=args.device,
+        trust_remote_code=args.trust_remote_code,
+    )
 
     # Determine layer range
     if args.all_layers:
