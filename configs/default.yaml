@@ -1,0 +1,91 @@
+# KBP Default Configuration
+
+model:
+  # Supported: "meta-llama/Meta-Llama-3-8B", "Qwen/Qwen3-8B"
+  name: "meta-llama/Meta-Llama-3-8B"
+  # Layer range to extract hidden states from
+  # Paper: layers 16-32 for Llama-3-8B (32 total), 16-36 for Qwen3-8B (36 total)
+  layer_start: 16
+  layer_end: 32      # set to -1 to use all layers
+  # Token position for hidden state extraction
+  # Options: "last" (default, best AUROC), "mean", "first", "last_k"
+  token_position: "last"
+  last_k: 3          # used only when token_position="last_k"
+  # dtype for inference
+  dtype: "float16"   # or "bfloat16", "float32"
+  device: "auto"     # "auto", "cuda", "cpu", "cuda:0", etc.
+
+probe:
+  # Architecture: "linear" (paper default), "mlp", "svm", "knn"
+  architecture: "linear"
+  # For logistic regression
+  solver: "lbfgs"
+  regularization: "l2"
+  C: 1.0
+  max_iter: 1000
+  # Normalization applied to hidden states before probing
+  # Options: "l2" (paper default), "l1", "none"
+  normalization: "l2"
+  # Train/test split
+  train_ratio: 0.70
+  n_seeds: 5
+  stratified: true
+
+knowledge_sufficiency:
+  # O1: frequency proxy (Wikipedia page views)
+  frequency_threshold: 10000  # f* = 10^4 monthly views
+  # O2: accuracy oracle (greedy exact match)
+  use_accuracy_oracle: false
+
+effective_rank:
+  # Number of queries for covariance estimation
+  n_queries: 256
+  # Layer stability window (±k layers around ℓ*)
+  layer_window: 3
+  # Thresholds for unsupervised classification
+  # These are calibrated from reference PopQA splits; override with calibrate()
+  tau_lo: null   # auto-calibrated
+  tau_hi: null   # auto-calibrated
+  # Fine-tuning investment threshold (8B-scale models)
+  tau_ft: 38.0
+
+gradient_snr:
+  # Number of labeled examples for SNR measurement
+  n_examples: 32
+  batch_size: 8
+  n_steps: 5         # early training regime
+  n_steps_robust: 50 # robustness check
+
+rag_routing:
+  # Retrieval cost ratio (cr / Δa)
+  cost_ratio: 0.5
+  # AUROC threshold for positive expected value
+  auroc_threshold: 0.85
+
+paraphrase:
+  # Variants per query for boundary distance analysis
+  n_variants: 8
+  methods: ["wordnet", "backtranslation"]
+  # Minimum valid paraphrases required
+  min_valid: 6
+
+cross_model:
+  # Number of unlabeled queries for Procrustes alignment
+  n_align: 200
+  # Alignment converges at ~150 queries (Figure 8)
+  n_align_min: 100
+
+data:
+  popqa:
+    # Entity page-view frequency partitions
+    high_freq_min: 100000   # f ≥ 10^5  (clean KS)
+    low_freq_max: 1000      # f ≤ 10^3  (clean KD)
+    # boundary region: 10^3 < f < 10^5
+  batch_size: 32
+  max_length: 256
+
+output:
+  checkpoint_dir: "checkpoints"
+  results_dir: "results"
+  plots_dir: "plots"
+  log_level: "INFO"
